@@ -263,9 +263,11 @@ final class StreamTransfer: NSObject, URLSessionDataDelegate {
     private var jobs: [Int: Job] = [:]
     private var continuations: [Int: CheckedContinuation<Int64, Error>] = [:]
     private var failure: [Int: Error] = [:]
-    private let session: URLSession
+    /// 必须先 super.init() 才能把 self 作为 delegate 传进去，所以这里用隐式解包
+    private var session: URLSession!
 
     override init() {
+        super.init()
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 60
         cfg.timeoutIntervalForResource = 7200
@@ -274,7 +276,6 @@ final class StreamTransfer: NSObject, URLSessionDataDelegate {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.httpShouldSetCookies = false
         cfg.httpCookieAcceptPolicy = .never
-        super.init()
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 8
         queue.qualityOfService = .userInitiated
