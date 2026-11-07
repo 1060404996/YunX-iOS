@@ -187,16 +187,41 @@ final class BaiduProvider: PanProvider {
         let path = file.fidToken.isEmpty ? file.fid : file.fidToken
         let loggedIn = isLoggedIn(ck)
 
-        var link: String
-        do {
-            link = try await locateDownload(path: path, cookie: auth)
-        } catch {
-            // 分享路径取链被拒（多数是「未转存」）：已登录时走转存兜底
-            guard loggedIn else { throw error }
+        var link: String?
+        var firstError: Error?
+
+        // ① 免转存：分享页签名 + sharedownload。不占用户空间，也不需要 bdstoken
+        let fsId = file.fid
+        if !fsId.isEmpty, fsId.allSatisfy({ $0.isNumber }) {
+            do {
+                link = try await shareDownload(surl: session.shareId, fsIds: [fsId], cookie: ck)
+            } catch {
+                firstError = error
+            }
+        }
+
+        // ② 按分享内路径直取（部分公开分享允许）
+        if link == nil {
+            do {
+                link = try await locateDownload(path: path, cookie: auth)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        // ③ 转存兜底：会用到 bdstoken，且必须是登录态
+        if link == nil {
+            guard loggedIn else {
+                throw firstError ?? YXError.business("该分享需要登录百度网盘后才能下载")
+            }
             link = try await transferThenLocate(session: session,
                                                 file: file,
                                                 cookie: ck,
                                                 randsk: randsk)
+        }
+
+        guard let finalLink = link else {
+            throw firstError ?? YXError.business("未获取到下载链接")
         }
 
         var headers: [String: String] = [
@@ -207,7 +232,7 @@ final class BaiduProvider: PanProvider {
         ]
         if !auth.isEmpty { headers["Cookie"] = auth }
 
-        return ResolvedDownload(url: link,
+        return ResolvedDownload(url: finalLink,
                                 filename: file.name,
                                 size: file.size,
                                 headers: headers,
@@ -329,6 +354,103 @@ final class BaiduProvider: PanProvider {
         throw YXError.business("未返回可用的下载链接")
     }
 
+    // MARK: 免转存分享下载（主路径）
+
+    /// 分享页 HTML 里带 sign / timestamp / shareid / uk，用它直接调 sharedownload：
+    /// 不用转存、不占用户空间、不需要 bdstoken。
+    private struct ShareSign {
+        var sign: String
+        var timestamp: String
+        var shareId: String
+        var uk: String
+    }
+
+    private func sharePageSign(surl: String, cookie: String) async -> ShareSign? {
+        let pageURL = panHost + "/s/" + surl
+        guard let html = try? await PanTool.text(url: pageURL, headers: [
+            "Cookie": cookie,
+            "User-Agent": webUA,
+            "Referer": panHost + "/"
+        ], allowStatus: [200, 302]) else { return nil }
+
+        // 字段在页面内嵌的 yunData 里，逐个正则比整段 JSON 解析更抗结构变化
+        guard let sign = YXHTML.first("\"sign\"\\s*:\\s*\"([A-Za-z0-9]{16,64})\"", in: html)
+                ?? YXHTML.first("sign=([A-Za-z0-9]{16,64})", in: html),
+              let timestamp = YXHTML.first("\"timestamp\"\\s*:\\s*\"?(\\d{10,13})", in: html),
+              let shareId = YXHTML.first("\"shareid\"\\s*:\\s*\"?(\\d+)\"?", in: html)
+                ?? YXHTML.first("\"share_id\"\\s*:\\s*\"?(\\d+)\"?", in: html),
+              let uk = YXHTML.first("\"uk\"\\s*:\\s*\"?(\\d+)\"?", in: html)
+                ?? YXHTML.first("\"share_uk\"\\s*:\\s*\"?(\\d+)\"?", in: html) else {
+            return nil
+        }
+        return ShareSign(sign: sign, timestamp: timestamp, shareId: shareId, uk: uk)
+    }
+
+    /// POST /api/sharedownload —— 免转存直链
+    private func shareDownload(surl: String, fsIds: [String], cookie: String) async throws -> String {
+        guard !fsIds.isEmpty else { throw YXError.business("缺少文件 ID") }
+        guard let p = await sharePageSign(surl: surl, cookie: cookie) else {
+            throw YXError.business("分享页签名解析失败")
+        }
+
+        let url = panHost + "/api/sharedownload?sign=" + YXURLUtil.encode(p.sign)
+            + "&timestamp=" + p.timestamp
+            + "&channel=chunlei&web=1&app_id=" + appID + "&clienttype=0"
+
+        let idList = "[" + fsIds.map { "\"\($0)\"" }.joined(separator: ",") + "]"
+        let body = "encrypt=0&product=share&uk=" + p.uk
+            + "&primaryid=" + p.shareId
+            + "&fid_list=" + YXURLUtil.encode(idList)
+
+        var req = HTTPRequest(url: url, method: "POST")
+        req.headers = [
+            "Cookie": cookie,
+            "User-Agent": YXUA.baiduNetdisk,
+            "Referer": panHost + "/s/" + surl,
+            "Content-Type": "application/x-www-form-urlencoded"
+        ]
+        req.body = body.data(using: .utf8)
+        req.injectCookies = false
+
+        let json = try await HTTPClient.shared.json(req)
+        let errno = json.yxInt("errno") ?? 0
+        guard errno == 0 else {
+            throw YXError.business("分享下载失败（errno=\(errno)）")
+        }
+
+        var usable: [[String: Any]] = []
+        for key in ["dlink", "list", "data.dlink"] {
+            usable.append(contentsOf: json.yxArray(key))
+        }
+        guard let picked = Self.pickLink(usable) else {
+            // 有些响应只给 dlink 字符串数组
+            if let raw = json.yxPath("dlink") as? [String], let first = raw.first, first.contains("://") {
+                return first
+            }
+            throw YXError.business("分享下载未返回直链")
+        }
+        return picked
+    }
+
+    /// 选链优先级：① encrypt=0 且 https ② 任意 https ③ 第一个
+    static func pickLink(_ rows: [[String: Any]]) -> String? {
+        let usable = rows.filter { ($0.yxString("url") ?? "").contains("://") }
+        guard !usable.isEmpty else { return nil }
+        if let plain = usable.first(where: {
+            ($0.yxInt("encrypt") ?? 1) == 0 && ($0.yxString("url") ?? "").hasPrefix("https")
+        }), let value = plain.yxString("url"), !value.isEmpty {
+            return value
+        }
+        if let secure = usable.first(where: { ($0.yxString("url") ?? "").hasPrefix("https") }),
+           let value = secure.yxString("url"), !value.isEmpty {
+            return value
+        }
+        if let first = usable.first, let value = first.yxString("url"), !value.isEmpty {
+            return value
+        }
+        return nil
+    }
+
     // MARK: 个人网盘（转存兜底用）
 
     /// GET /api/gettemplatevariable → result.<field>（规格写作 data.<field>，两者都认）
@@ -338,7 +460,8 @@ final class BaiduProvider: PanProvider {
             + "&web=1&fields=" + YXURLUtil.encode(fields)
         guard let json = try? await PanTool.json(url: url, headers: [
             "Cookie": cookie,
-            "User-Agent": webUA
+            "User-Agent": webUA,
+            "Referer": panHost + "/disk/home"
         ]) else { return nil }
         guard (json.yxInt("errno") ?? 0) == 0 else { return nil }
         if let v = json.yxString("result." + field), !v.isEmpty { return v }
@@ -351,11 +474,35 @@ final class BaiduProvider: PanProvider {
             return cached
         }
         if forceRefresh { BaiduProvider.storeBdstoken(nil) }
-        guard let token = await templateValue(cookie: cookie, field: "bdstoken"), !token.isEmpty else {
-            throw YXError.business("获取 bdstoken 失败，请重新登录")
+
+        // ① gettemplatevariable
+        if let token = await templateValue(cookie: cookie, field: "bdstoken"), !token.isEmpty {
+            BaiduProvider.storeBdstoken(token)
+            return token
         }
-        BaiduProvider.storeBdstoken(token)
-        return token
+        // ② 网盘主页 HTML 里抓（gettemplatevariable 偶尔对某些账号返回空）
+        if let token = await homeBdstoken(cookie: cookie), !token.isEmpty {
+            BaiduProvider.storeBdstoken(token)
+            return token
+        }
+        throw YXError.business("获取 bdstoken 失败，请在网盘页重新登录百度（Cookie 可能不完整）")
+    }
+
+    /// 从网盘主页 HTML 里提取 bdstoken
+    private func homeBdstoken(cookie: String) async -> String? {
+        for path in ["/disk/home", "/disk/main"] {
+            guard let html = try? await PanTool.text(url: panHost + path, headers: [
+                "Cookie": cookie,
+                "User-Agent": webUA,
+                "Referer": panHost + "/disk/home",
+                "Accept": "text/html,application/xhtml+xml"
+            ], allowStatus: [200, 301, 302]) else { continue }
+
+            if let t = YXHTML.first("\"bdstoken\"\\s*:\\s*\"([A-Za-z0-9]{8,64})\"", in: html) { return t }
+            if let t = YXHTML.first("'bdstoken'\\s*:\\s*'([A-Za-z0-9]{8,64})'", in: html) { return t }
+            if let t = YXHTML.first("bdstoken=([A-Za-z0-9]{8,64})", in: html) { return t }
+        }
+        return nil
     }
 
     /// 个人网盘目录下的 path 集合（用于判断临时转存目录是否存在）
