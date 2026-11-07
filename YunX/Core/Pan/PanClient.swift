@@ -84,24 +84,8 @@ enum PanConfigs {
 
 // MARK: - 模型
 
-struct ShareSession: Equatable {
-    let platform: SharePlatform
-    let shareId: String
-    let stoken: String
-    var title: String
-}
-
-struct ShareFileItem: Identifiable, Hashable {
-    let fid: String
-    let name: String
-    let size: Int64
-    let isDir: Bool
-    let parentFid: String
-    let fidToken: String
-    let modifyTime: String
-
-    var id: String { fid }
-}
+// 注意：ShareSession / ShareFileItem 定义在 PanProvider.swift（带 extra 的统一版本），
+// 这里只保留夸克/UC 专属的直链模型。
 
 struct PanDownloadLink {
     let fid: String

@@ -119,32 +119,33 @@ struct ResolveView: View {
     // MARK: 平台
 
     private var platformCard: some View {
-        YXSection("支持的平台", footnote: "夸克 / UC 已打通全链路下载；其余平台陆续接入") {
-            VStack(spacing: 0) {
-                let supported: [SharePlatform] = [.quark, .uc]
-                let pending: [SharePlatform] = [.xunlei, .baidu, .pan123, .pan115, .c139, .guangya, .lanzou, .ilanzou, .github]
-                ForEach(Array(supported.enumerated()), id: \.offset) { idx, p in
-                    YXRow(symbol: p.symbol, tint: p.tint, title: p.displayName,
-                          subtitle: "已支持", isLast: false) {
-                        YXBadge(text: "可用", tint: YXColor.success)
-                    }
-                    .opacity(1)
-                    .id("sup-\(idx)")
-                }
-                HStack(spacing: 6) {
-                    ForEach(pending, id: \.self) { p in
+        YXSection("支持的平台",
+                  footnote: "123 / 蓝奏 / 优享 / 光鸭 / GitHub 可直接匿名下载；夸克 / UC 游客限部分大小；百度 / 115 / 迅雷 建议登录") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
+                ForEach(SharePlatform.allCases) { p in
+                    let loggedIn = PanUtil.isValidCookie(PanTool.cookie(p))
+                    HStack(spacing: 6) {
+                        Image(systemName: p.symbol)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(p.tint)
                         Text(p.shortName)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(YXColor.tertiaryLabel)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(YXColor.surfaceRaised))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(YXColor.label)
+                        if loggedIn {
+                            Circle()
+                                .fill(YXColor.success)
+                                .frame(width: 5, height: 5)
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(p.tint.opacity(0.10))
+                    )
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, YXMetric.cardPadding)
-                .padding(.vertical, 12)
             }
+            .padding(YXMetric.cardPadding)
         }
     }
 
@@ -177,8 +178,8 @@ struct ResolveView: View {
             errorText = "没识别出分享链接"
             return
         }
-        guard PanConfigs.config(for: share.platform) != nil else {
-            errorText = "\(share.platform.displayName) 暂未接入，先支持夸克与 UC"
+        guard PanProviders.isSupported(share.platform) else {
+            errorText = "\(share.platform.displayName) 暂未接入"
             return
         }
         focused = false

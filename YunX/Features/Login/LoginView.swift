@@ -69,13 +69,28 @@ struct LoginView: View {
 
     private var requiredKeys: [String] {
         switch platform {
-        case .quark, .uc: return ["__pus", "__puus"]
-        default:          return []
+        case .quark, .uc:  return ["__pus", "__puus"]
+        case .baidu:       return ["BDUSS"]
+        case .pan115:      return ["UID", "SEID"]
+        case .lanzou:      return ["phpdisk_info"]
+        default:           return []
         }
     }
 
     private var loginURL: String {
-        PanConfigs.config(for: platform)?.loginURL ?? platform.cookieDomain
+        switch platform {
+        case .quark:   return "https://pan.quark.cn/?fr=pc&platform=pc"
+        case .uc:      return "https://drive.uc.cn/"
+        case .baidu:   return "https://pan.baidu.com/"
+        case .pan115:  return "https://115.com/"
+        case .lanzou:  return "https://pc.woozooo.com/account.php"
+        case .ilanzou: return "https://www.ilanzou.com/"
+        case .xunlei:  return "https://pan.xunlei.com/"
+        case .c139:    return "https://yun.139.com/"
+        case .guangya: return "https://www.guangyapan.com/"
+        case .pan123:  return "https://www.123pan.com/"
+        case .github:  return "https://github.com/login"
+        }
     }
 
     private var manualSheet: some View {
@@ -139,7 +154,7 @@ struct CookieWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        webView.customUserAgent = PanConfigs.config(for: .quark)?.userAgent
+        webView.customUserAgent = YXUA.chromeDesktop
 
         context.coordinator.startPolling()
 
@@ -171,6 +186,8 @@ struct CookieWebView: UIViewRepresentable {
         }
 
         private func checkCookies() {
+            // 没有明确必需键的平台不做自动检测，只走手动粘贴
+            guard !parent.requiredKeys.isEmpty else { return }
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
                 guard let self else { return }
                 let names = Set(cookies.map { $0.name })

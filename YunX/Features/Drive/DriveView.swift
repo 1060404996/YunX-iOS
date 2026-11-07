@@ -17,7 +17,8 @@ struct DriveView: View {
         var total: Int64 = 0
     }
 
-    private let platforms: [SharePlatform] = [.quark, .uc]
+    private let loginPlatforms: [SharePlatform] = [.quark, .uc, .baidu, .pan115, .lanzou, .ilanzou]
+    private let guestPlatforms: [SharePlatform] = [.pan123, .c139, .guangya, .xunlei, .github]
 
     var body: some View {
         NavigationStack {
@@ -25,7 +26,7 @@ struct DriveView: View {
                 VStack(alignment: .leading, spacing: YXMetric.sectionGap) {
                     summaryCard
                     accountsCard
-                    pendingCard
+                    guestCard
                 }
                 .padding(.horizontal, YXMetric.pagePadding)
                 .padding(.bottom, 28)
@@ -112,7 +113,7 @@ struct DriveView: View {
     }
 
     private var loggedCount: Int {
-        platforms.filter { accounts[$0]?.loggedIn == true }.count
+        loginPlatforms.filter { accounts[$0]?.loggedIn == true }.count
     }
 
     private var totalCapacityText: String {
@@ -128,10 +129,10 @@ struct DriveView: View {
     // MARK: 账号
 
     private var accountsCard: some View {
-        YXSection("账号") {
+        YXSection("账号", footnote: "凭证加密存 Keychain，退出登录即从本机清除") {
             VStack(spacing: 0) {
-                ForEach(Array(platforms.enumerated()), id: \.offset) { idx, platform in
-                    accountRow(platform, isLast: idx == platforms.count - 1)
+                ForEach(Array(loginPlatforms.enumerated()), id: \.offset) { idx, platform in
+                    accountRow(platform, isLast: idx == loginPlatforms.count - 1)
                 }
             }
         }
@@ -178,20 +179,30 @@ struct DriveView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var pendingCard: some View {
-        YXSection("后续接入", footnote: "协议已归档，按平台逐个打开") {
+    private var guestCard: some View {
+        YXSection("免登录即可解析", footnote: "这些平台的分享链接不需要账号，可直接浏览与下载") {
             VStack(spacing: 0) {
-                let list: [SharePlatform] = [.pan123, .baidu, .lanzou, .xunlei]
-                ForEach(Array(list.enumerated()), id: \.offset) { idx, p in
+                ForEach(Array(guestPlatforms.enumerated()), id: \.offset) { idx, p in
                     YXRow(symbol: p.symbol,
                           tint: p.tint,
                           title: p.displayName,
-                          subtitle: "解析器开发中",
-                          isLast: idx == list.count - 1) {
-                        YXBadge(text: "待接入", tint: YXColor.tertiaryLabel)
+                          subtitle: guestSubtitle(p),
+                          isLast: idx == guestPlatforms.count - 1) {
+                        YXBadge(text: "免登录", tint: YXColor.success)
                     }
                 }
             }
+        }
+    }
+
+    private func guestSubtitle(_ p: SharePlatform) -> String {
+        switch p {
+        case .pan123:  return "分享列表与直链都是匿名接口"
+        case .c139:    return "分享通道无需 Authorization"
+        case .guangya: return "匿名请求需带设备标识"
+        case .xunlei:  return "游客态解析，部分分享需提取码"
+        case .github:  return "公开仓库可直连，Token 仅提升限额"
+        default:       return "免登录"
         }
     }
 
@@ -200,16 +211,16 @@ struct DriveView: View {
     private func refresh() {
         isLoading = true
         var next: [SharePlatform: AccountStatus] = [:]
-        for platform in platforms {
-            let cookie = CookieStore.shared.cookie(for: platform) ?? ""
-            next[platform] = AccountStatus(loggedIn: PanUtil.isValidCookie(cookie), nickname: nil)
+        for platform in loginPlatforms {
+            let cookie = PanTool.cookie(platform)
+            next[platform] = AccountStatus(loggedIn: !cookie.isEmpty, nickname: nil)
         }
         accounts = next
 
         Task {
-            for platform in platforms {
-                let cookie = CookieStore.shared.cookie(for: platform) ?? ""
-                guard PanUtil.isValidCookie(cookie) else { continue }
+            for platform in loginPlatforms {
+                let cookie = PanTool.cookie(platform)
+                guard !cookie.isEmpty else { continue }
                 let nick = await ResolveService.nickname(platform: platform, cookie: cookie)
                 let quota = await ResolveService.quota(platform: platform)
                 await MainActor.run {

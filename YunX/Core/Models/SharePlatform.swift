@@ -62,7 +62,7 @@ enum SharePlatform: String, CaseIterable, Identifiable, Codable {
         case .xunlei:  return "bolt.horizontal.fill"
         case .baidu:   return "cloud.sun.fill"
         case .c139:    return "antenna.radiowaves.left.and.right"
-        case .pan123:  return "123.rectangle.fill"
+        case .pan123:  return "number.square.fill"
         case .pan115:  return "1.circle.fill"
         case .guangya: return "drop.fill"
         case .ilanzou: return "shippingbox.fill"
