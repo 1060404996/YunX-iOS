@@ -102,7 +102,7 @@ struct ShareBrowserView: View {
                     Text(session.platform.displayName)
                         .font(.yxRowTitleStrong)
                         .foregroundStyle(YXColor.label)
-                    Text(PanUtil.isValidCookie(CookieStore.shared.cookie(for: session.platform) ?? "")
+                    Text(PanTool.hasCredential(session.platform)
                          ? "登录态 · 免转存直取"
                          : "游客态 · 大文件需登录")
                         .font(.yxFootnote)

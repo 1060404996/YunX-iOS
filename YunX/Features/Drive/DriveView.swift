@@ -212,15 +212,14 @@ struct DriveView: View {
         isLoading = true
         var next: [SharePlatform: AccountStatus] = [:]
         for platform in loginPlatforms {
-            let cookie = PanTool.cookie(platform)
-            next[platform] = AccountStatus(loggedIn: !cookie.isEmpty, nickname: nil)
+            next[platform] = AccountStatus(loggedIn: PanTool.hasCredential(platform), nickname: nil)
         }
         accounts = next
 
         Task {
             for platform in loginPlatforms {
                 let cookie = PanTool.cookie(platform)
-                guard !cookie.isEmpty else { continue }
+                guard PanTool.hasCredential(platform) else { continue }
                 let nick = await ResolveService.nickname(platform: platform, cookie: cookie)
                 let quota = await ResolveService.quota(platform: platform)
                 await MainActor.run {

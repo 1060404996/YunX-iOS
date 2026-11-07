@@ -12,12 +12,15 @@ struct ResolveView: View {
     @State private var session: ShareSession?
     @State private var showBrowser = false
     @State private var history: [ResolveHistoryItem] = ResolveHistoryItem.load()
+    @State private var clipboardAvailable = false
+    @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focused: Bool
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: YXMetric.sectionGap) {
+                    if clipboardAvailable { clipboardBanner }
                     inputCard
                     platformCard
                     if !history.isEmpty { historyCard }
@@ -29,6 +32,10 @@ struct ResolveView: View {
             .yxPageBackground()
             .navigationTitle("解析")
             .navigationBarTitleDisplayMode(.large)
+            .onAppear { checkClipboard() }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { checkClipboard() }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -104,8 +111,7 @@ struct ResolveView: View {
                         .background(Capsule().fill(YXColor.brandGradient))
                     }
                     .yxPressable()
-                    .disabled(isResolving || parsed == nil)
-                    .opacity(parsed == nil ? 0.45 : 1)
+                    .disabled(isResolving)
                 }
             }
             .padding(YXMetric.cardPadding)
@@ -116,6 +122,41 @@ struct ResolveView: View {
         ShareLinkParser.parse(input)
     }
 
+    // MARK: 剪贴板提示
+
+    /// 只提示、不主动读内容：`hasStrings` 不会触发 iOS 的「允许粘贴」弹窗，
+    /// 用户点了才真正读取，避免每次切回 App 都弹一次系统提示。
+    private var clipboardBanner: some View {
+        Button {
+            pasteFromClipboard()
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: "doc.on.clipboard.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("剪贴板里有内容")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("点一下粘贴并解析")
+                        .font(.yxFootnote)
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right.circle.fill")
+                    .font(.system(size: 19))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(YXColor.brandGradient)
+            )
+        }
+        .yxPressable()
+    }
+
     // MARK: 平台
 
     private var platformCard: some View {
@@ -123,7 +164,7 @@ struct ResolveView: View {
                   footnote: "123 / 蓝奏 / 优享 / 光鸭 / GitHub 可直接匿名下载；夸克 / UC 游客限部分大小；百度 / 115 / 迅雷 建议登录") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
                 ForEach(SharePlatform.allCases) { p in
-                    let loggedIn = PanUtil.isValidCookie(PanTool.cookie(p))
+                    let loggedIn = PanTool.hasCredential(p)
                     HStack(spacing: 6) {
                         Image(systemName: p.symbol)
                             .font(.system(size: 11, weight: .semibold))
@@ -173,9 +214,32 @@ struct ResolveView: View {
 
     // MARK: 动作
 
+    private func checkClipboard() {
+        guard input.isEmpty else {
+            clipboardAvailable = false
+            return
+        }
+        clipboardAvailable = UIPasteboard.general.hasStrings
+    }
+
+    private func pasteFromClipboard() {
+        let text = UIPasteboard.general.string ?? ""
+        clipboardAvailable = false
+        guard !text.isEmpty else { return }
+        input = text
+        errorText = nil
+        if let share = ShareLinkParser.parse(text) {
+            // 识别成功就直接走解析，省一次点击
+            _ = share
+            resolve()
+        } else {
+            errorText = "剪贴板里没识别出分享链接，检查一下是不是只复制了提取码"
+        }
+    }
+
     private func resolve() {
         guard let share = parsed else {
-            errorText = "没识别出分享链接"
+            errorText = "没识别出分享链接。支持：夸克 / UC / 百度 / 123 / 115 / 蓝奏 / 优享 / 光鸭 / 139 / 迅雷 / GitHub。链接可以不带 http:// 前缀。"
             return
         }
         guard PanProviders.isSupported(share.platform) else {

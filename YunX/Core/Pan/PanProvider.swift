@@ -111,6 +111,29 @@ enum PanTool {
         CookieStore.shared.setCookie(value, for: platform)
     }
 
+    /// 各平台登录态判定规则不同，不能统一用夸克/UC 的 __puus 规则
+    static func hasCredential(_ platform: SharePlatform) -> Bool {
+        let value = cookie(platform)
+        guard !value.isEmpty else { return false }
+        switch platform {
+        case .quark, .uc:
+            return PanUtil.isValidCookie(value)
+        case .baidu:
+            return value.contains("BDUSS=")
+        case .pan115:
+            return value.contains("UID=") || value.contains("SEID=")
+        case .lanzou:
+            return value.contains("phpdisk_info=")
+        case .ilanzou:
+            return value.count > 16
+        case .xunlei, .guangya, .c139:
+            // Token 型凭证，非 Cookie 结构
+            return value.count > 16
+        case .pan123, .github:
+            return value.count > 8
+        }
+    }
+
     /// 统一 JSON 请求
     static func json(url: String,
                      method: String = "GET",
