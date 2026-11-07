@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+
+# 构建产物
+*.ipa
+*.dSYM.zip
+out/
+
+# 依赖
+.swiftpm/
+Pods/
+Carthage/Build/
+
+# 日志
+build.log
+*.log
