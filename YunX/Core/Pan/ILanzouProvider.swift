@@ -425,15 +425,7 @@ final class ILanzouProvider: PanProvider {
         }
 
         let probe = NoRedirectSession()
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await probe.send(request)
-        } catch let error as YXError {
-            throw error
-        } catch {
-            throw YXError.network(error.localizedDescription)
-        }
+        let (data, response) = try await probe.send(request)
 
         guard let http = response as? HTTPURLResponse else {
             throw YXError.network("非 HTTP 响应")
@@ -465,7 +457,13 @@ final class ILanzouProvider: PanProvider {
 
         func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
             defer { transport.finishTasksAndInvalidate() }
-            return try await transport.data(for: request)
+            do {
+                return try await transport.data(for: request)
+            } catch let error as YXError {
+                throw error
+            } catch {
+                throw YXError.network(error.localizedDescription)
+            }
         }
 
         func urlSession(_ session: URLSession,

@@ -66,7 +66,7 @@ final class GuangYaProvider: PanProvider {
             throw YXError.business("光鸭分享链接无效")
         }
 
-        var session = ShareSession(platform: .guangya,
+        let session = ShareSession(platform: .guangya,
                                    shareId: id,
                                    stoken: accessToken,
                                    title: title.isEmpty ? "光鸭分享" : title,
@@ -138,7 +138,7 @@ final class GuangYaProvider: PanProvider {
         let hasMore = data.yxBool("hasMore")
         let next: String?
         if let hasMore {
-            next = hasMore && !rawCursor.isEmpty ? rawCursor : nil
+            next = (hasMore && !rawCursor.isEmpty) ? rawCursor : nil
         } else {
             // hasMore 缺省时以 cursor 是否存在为准（避免服务端只回 cursor 时被截断成单页）
             next = rawCursor.isEmpty ? nil : rawCursor

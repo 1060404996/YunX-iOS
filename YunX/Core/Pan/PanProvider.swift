@@ -21,6 +21,21 @@ struct ShareSession: Equatable {
     func value(_ key: String) -> String { extra[key] ?? "" }
 }
 
+/// 分享内的一个文件/文件夹条目。
+/// `fid` 是平台内唯一 id（115 用 cid、百度用 fs_id、蓝奏带 d:/f: 前缀）；
+/// `fidToken` 是取链所需的平台令牌（夸克 share_fid_token、115 pickcode、123 的 S3KeyFlag|Etag|Node）。
+struct ShareFileItem: Identifiable, Hashable {
+    let fid: String
+    let name: String
+    let size: Int64
+    let isDir: Bool
+    let parentFid: String
+    let fidToken: String
+    let modifyTime: String
+
+    var id: String { fid }
+}
+
 /// 一条可下载的直链（含下载必需请求头）
 struct ResolvedDownload {
     var url: String
