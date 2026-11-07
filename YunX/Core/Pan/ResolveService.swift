@@ -80,18 +80,20 @@ enum ResolveService {
                 do {
                     link = try await client.downloadLinkWithoutSave(session: session, file: file, cookie: cookie)
                 } catch {
-                    link = try await transferThenDownload(client: client,
-                                                          session: session,
-                                                          file: file,
-                                                          cookie: cookie,
-                                                          cleanup: &cleanupDirFid)
+                    let fallback = try await transferThenDownload(client: client,
+                                                                  session: session,
+                                                                  file: file,
+                                                                  cookie: cookie)
+                    link = fallback.link
+                    cleanupDirFid = fallback.cleanupDirFid
                 }
             } else {
-                link = try await transferThenDownload(client: client,
-                                                      session: session,
-                                                      file: file,
-                                                      cookie: cookie,
-                                                      cleanup: &cleanupDirFid)
+                let fallback = try await transferThenDownload(client: client,
+                                                              session: session,
+                                                              file: file,
+                                                              cookie: cookie)
+                link = fallback.link
+                cleanupDirFid = fallback.cleanupDirFid
             }
         } else {
             guard platform == .quark || platform == .uc else {
@@ -110,20 +112,20 @@ enum ResolveService {
                                 cleanupDirFid: cleanupDirFid)
     }
 
+    /// 转存到唯一临时子目录 → 轮询任务 → 用新 fid 取链
     private static func transferThenDownload(client: PanClient,
                                              session: ShareSession,
                                              file: ShareFileItem,
-                                             cookie: String,
-                                             cleanup: inout String?) async throws -> PanDownloadLink {
+                                             cookie: String) async throws -> (link: PanDownloadLink, cleanupDirFid: String?) {
         let baseDir = try await client.ensureTempDir(cookie: cookie)
         // 每次用唯一子目录：夸克去重键是 to_pdir_fid，目录不同 ⇒ 每次都是新 fid
         let unique = "tr_\(Int(Date().timeIntervalSince1970 * 1000))_\(Int.random(in: 0...999999))"
         let subDir = try await client.createFolder(name: unique, parentFid: baseDir, cookie: cookie)
-        cleanup = subDir
 
         let taskId = try await client.saveShareFile(session: session, file: file, toDirFid: subDir, cookie: cookie)
         let savedFid = try await client.pollTask(taskId: taskId, cookie: cookie)
-        return try await client.cloudDownloadLink(fid: savedFid, cookie: cookie)
+        let link = try await client.cloudDownloadLink(fid: savedFid, cookie: cookie)
+        return (link, subDir)
     }
 
     /// 下载完成后清理云端临时目录（失败不清理，留给用户重试用）

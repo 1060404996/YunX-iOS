@@ -51,6 +51,40 @@ struct DownloadManifest: Codable {
     var doneBytes: Int64 { chunks.reduce(0) { $0 + min($1.done, $1.length) } }
 }
 
+// MARK: - 分片状态箱
+
+/// 各分片并发更新同一份 manifest，用引用类型 + 锁承载，
+/// 避免 inout 在 TaskGroup 里跨并发域传递（Swift 不允许）。
+final class ManifestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var manifest: DownloadManifest
+
+    init(_ manifest: DownloadManifest) {
+        self.manifest = manifest
+    }
+
+    func snapshot() -> DownloadManifest {
+        lock.lock(); defer { lock.unlock() }
+        return manifest
+    }
+
+    func chunk(at index: Int) -> ChunkPlan {
+        lock.lock(); defer { lock.unlock() }
+        guard index >= 0, index < manifest.chunks.count else {
+            return ChunkPlan(start: 0, end: -1, done: 0)
+        }
+        return manifest.chunks[index]
+    }
+
+    @discardableResult
+    func addDone(index: Int, bytes: Int64) -> DownloadManifest {
+        lock.lock(); defer { lock.unlock() }
+        guard index >= 0, index < manifest.chunks.count else { return manifest }
+        manifest.chunks[index].done += bytes
+        return manifest
+    }
+}
+
 // MARK: - 调优
 
 struct DownloadTuning {
@@ -462,7 +496,8 @@ final class DownloadEngine {
         for (k, v) in spec.headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        if let (data, http) = try? await probeSession.data(for: req) as? (Data, HTTPURLResponse) ?? nil {
+        if let raw = try? await probeSession.data(for: req),
+           let http = raw.1 as? HTTPURLResponse {
             let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
             if !ct.contains("text/html"),
                http.statusCode == 206,
@@ -470,7 +505,6 @@ final class DownloadEngine {
                let parsed = StreamTransfer.parseContentRange(cr),
                parsed.start == 0, parsed.end == 0,
                let total = parsed.total, total > 0 {
-                _ = data
                 return RangeProbe(totalBytes: total, supportsRange: true,
                                   etag: http.value(forHTTPHeaderField: "ETag"))
             }
@@ -550,6 +584,7 @@ final class DownloadEngine {
         try writer.open(writerKey, at: destination, size: total)
         try persist(manifest, to: manifestURL)
 
+        let box = ManifestBox(manifest)
         let workers = tuning.workers(platform: platform)
         let reporter = ProgressReporter(initial: manifest.doneBytes, total: total, onUpdate: progress)
         progress(manifest.doneBytes, total)
@@ -570,7 +605,7 @@ final class DownloadEngine {
                         if stagger > 0 { try? await Task.sleep(nanoseconds: stagger) }
                         try await runChunk(index: index,
                                            spec: spec,
-                                           manifest: &manifest,
+                                           box: box,
                                            manifestURL: manifestURL,
                                            writerKey: writerKey,
                                            reporter: reporter,
@@ -597,21 +632,22 @@ final class DownloadEngine {
             }
         } catch {
             writer.close(writerKey)
-            try? persist(manifest, to: manifestURL)
+            try? persist(box.snapshot(), to: manifestURL)
             throw error
         }
 
         writer.close(writerKey)
-        try persist(manifest, to: manifestURL)
+        let finalManifest = box.snapshot()
+        try persist(finalManifest, to: manifestURL)
         progress(total, total)
-        return manifest
+        return finalManifest
     }
 
     // MARK: 单片
 
     private func runChunk(index: Int,
                           spec: DownloadSpec,
-                          manifest: inout DownloadManifest,
+                          box: ManifestBox,
                           manifestURL: URL,
                           writerKey: String,
                           reporter: ProgressReporter,
@@ -619,7 +655,7 @@ final class DownloadEngine {
         var attempt = 0
         while true {
             if isCancelled() { throw YXError.cancelled }
-            let plan = manifest.chunks[index]
+            let plan = box.chunk(at: index)
             if plan.isFinished { return }
 
             let from = plan.start + plan.done
@@ -637,28 +673,22 @@ final class DownloadEngine {
                 }
 
                 var offset = from
-                var wrote: Int64 = 0
                 let transfer = StreamTransfer()
                 let received = try await transfer.transfer(req) { data in
                     try? self.writer.write(writerKey, offset: offset, data: data)
                     offset += Int64(data.count)
-                    wrote += Int64(data.count)
-                } onProgress: { _ in
-                    // 片内进度：节流交给 reporter
-                    reporter.bump(0)
-                }
+                } onProgress: { _ in }
 
                 await limiter.consume(received)
 
-                manifest.chunks[index].done += received
+                let snapshot = box.addDone(index: index, bytes: received)
                 reporter.bump(received)
-                try? persist(manifest, to: manifestURL)
+                try? persist(snapshot, to: manifestURL)
 
-                if manifest.chunks[index].isFinished { return }
+                if box.chunk(at: index).isFinished { return }
                 // 未满则继续拉剩余部分
                 attempt = 0
                 if received == 0 { throw YXError.network("分片返回 0 字节") }
-                _ = wrote
             } catch let e as RangePolicyError {
                 if case .rangeIgnored = e {
                     // 不在片内退避：立即交给上层回退单流

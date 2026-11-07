@@ -75,8 +75,8 @@ enum PanConfigs {
 
     static func config(for platform: SharePlatform) -> PanConfig? {
         switch platform {
-        case .quark: return .quark
-        case .uc:    return .uc
+        case .quark: return PanConfigs.quark
+        case .uc:    return PanConfigs.uc
         default:     return nil
         }
     }

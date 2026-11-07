@@ -144,7 +144,8 @@ enum YXPaths {
 
 // MARK: - 管理器
 
-@MainActor
+/// 任务列表对 UI 是 ObservableObject；所有 @Published 变更都经主线程提交，
+/// 但不把类型本身标成 @MainActor —— 否则 `DownloadManager.shared` 在 App 属性初始化器里不可达。
 final class DownloadManager: ObservableObject {
     static let shared = DownloadManager()
 
