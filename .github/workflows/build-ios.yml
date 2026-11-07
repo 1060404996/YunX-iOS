@@ -41,6 +41,18 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.$(date -u +%Y%m%d%H%M)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "resolved version: $VERSION"
+
       - name: Build (arm64, unsigned)
         run: |
           set -o pipefail
@@ -55,11 +67,13 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             ENABLE_BITCODE=NO \
+            MARKETING_VERSION="${{ steps.ver.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.build }}" \
             build | tee build.log
           echo "---- tail ----"
           tail -n 40 build.log
 
-      - name: Package IPA
+      - name: Ad-hoc sign and package IPA
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/YunX.app"
           if [ ! -d "$APP_PATH" ]; then
@@ -67,15 +81,24 @@ jobs:
             find build/Build/Products -maxdepth 3 -name "*.app" || true
             exit 1
           fi
+
+          # 关键：必须做 ad-hoc 签名。
+          # 零签名的 Mach-O 会被 iOS 内核直接 SIGKILL（表现就是「装上但点开闪退」）。
+          # ad-hoc 签名后：TrollStore 可直接运行，Sideloadly / AltStore 重签也更稳。
+          echo "---- ad-hoc signing ----"
+          codesign --force --timestamp=none --sign - "$APP_PATH"
+          codesign -dv --verbose=2 "$APP_PATH" 2>&1 || true
+          echo "---- verify ----"
+          codesign --verify --verbose=2 "$APP_PATH" 2>&1 || true
+
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
-          # 打进 entitlements 之外的必要文件：确保可执行位存在
           chmod +x "out/Payload/YunX.app/YunX"
           cd out
-          zip -qry "../YunX-unsigned.ipa" Payload
+          zip -qry "../YunX.ipa" Payload
           cd ..
-          ls -lh YunX-unsigned.ipa
-          unzip -l YunX-unsigned.ipa | head -n 20
+          ls -lh YunX.ipa
+          unzip -l YunX.ipa | head -n 20
 
       - name: Extract dSYM info
         if: always()
@@ -85,8 +108,8 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: YunX-unsigned-ipa
-          path: YunX-unsigned.ipa
+          name: YunX-ipa
+          path: YunX.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -103,5 +126,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: YunX-unsigned.ipa
+          files: YunX.ipa
           generate_release_notes: true

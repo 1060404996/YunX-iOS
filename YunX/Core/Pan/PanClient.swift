@@ -169,11 +169,9 @@ final class PanClient {
     private var guestPugs: String?
 
     init(platform: SharePlatform) {
-        guard let cfg = PanConfigs.config(for: platform) else {
-            fatalError("unsupported platform \(platform)")
-        }
         self.platform = platform
-        self.config = cfg
+        // 只有夸克/UC 会走到这里；理论上不会落到 quark 兜底，但绝不 fatalError
+        self.config = PanConfigs.config(for: platform) ?? PanConfigs.quark
         self.http = HTTPClient()
         self.cookieStore = .shared
     }

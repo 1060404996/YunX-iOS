@@ -86,14 +86,28 @@ open YunX.xcodeproj
 
 ## 安装
 
-Actions 产出的是**未签名 ipa**（没有开发者证书就签不了）。要装到真机上，选一种：
+Actions 产出 `YunX.ipa`，**已经做过 ad-hoc 签名**（`codesign -s -`）。
 
-1. **TrollStore** —— 支持的系统直接装，最省事
-2. **Sideloadly / AltStore / SideStore** —— 用你自己的 Apple ID 自签，免费账号 7 天续签一次
-3. **爱思助手 / 各类自签工具** —— 同上
+这一步不能省：零签名的 Mach-O 会被 iOS 内核直接 `SIGKILL`，表现就是「能装上但点开闪退」。ad-hoc 签名后：
+
+1. **TrollStore** —— 直接装，能跑（最省事，但只支持特定系统版本）
+2. **Sideloadly / AltStore / SideStore** —— 用你自己的 Apple ID 重签，免费账号 7 天续签一次
+3. **爱思助手等自签工具** —— 同上，选「重签名后安装」
 
 如果你有付费开发者账号，把 `project.yml` 里的 `CODE_SIGN_STYLE` 改成 `Automatic`、
 填上 `DEVELOPMENT_TEAM`，再把证书和描述文件传进仓库 Secrets，就能出正式签名包。
+
+### 装上了但闪退？
+
+按顺序排查：
+
+1. **确认是自签安装**。直接把 ipa 拖进爱思助手「安装」而不重签名，几乎必然闪退。
+2. **确认设备 iOS ≥ 17.0**（`MinimumOSVersion` 是 17.0）。
+3. **抓崩溃日志**：`设置 → 隐私与安全性 → 分析与改进 → 分析数据`，找 `YunX-2026-xx-xx.ips` 开头的条目。
+   日志里 `Exception Type` 与 `Termination Reason` 会直接指出原因：
+   - `EXC_CRASH (SIGKILL)` + `Code Signature Invalid` → 签名问题，重新自签
+   - `EXC_BAD_ACCESS` + 具体栈帧 → 代码问题，把栈贴到 Issue
+   - `Killed: 9` 且无栈 → 同样多半是签名或 entitlement
 
 ## 项目结构
 
