@@ -28,8 +28,7 @@ struct LoginView: View {
                               requiredKeys: requiredKeys,
                               onProgress: { progress = $0 },
                               onFound: { cookie in
-                                  onSuccess(cookie)
-                                  dismiss()
+                                  handleCaptured(cookie)
                               })
                     .ignoresSafeArea(edges: .bottom)
 
@@ -63,6 +62,37 @@ struct LoginView: View {
             }
             .sheet(isPresented: $showManual) {
                 manualSheet
+            }
+        }
+    }
+
+    /// 只有这些平台的凭证能用服务端接口确认（同一个 gettemplatevariable / account info 链路）
+    private var canValidate: Bool {
+        switch platform {
+        case .quark, .uc, .baidu: return true
+        default: return false
+        }
+    }
+
+    /// WKWebView 抓到 Cookie 后先落库，再向服务端确认一次登录态。
+    /// 百度/夸克这类平台的 Cookie 里 HttpOnly 字段可能晚几秒才写入，
+    /// 只靠字符串判断会出现「本地以为登录了、服务端不认」的情况。
+    private func handleCaptured(_ cookie: String) {
+        onSuccess(cookie)
+        guard canValidate else {
+            dismiss()
+            return
+        }
+        hint = "已保存凭证，正在向服务端确认…"
+        Task {
+            let nick = await ResolveService.nickname(platform: platform, cookie: cookie)
+            await MainActor.run {
+                if let nick, !nick.isEmpty {
+                    hint = "登录成功：\(nick)"
+                    dismiss()
+                } else {
+                    hint = "凭证已保存，但服务端未确认。请在页面上确认已显示登录成功并多停留几秒，或返回网盘页重新检测"
+                }
             }
         }
     }

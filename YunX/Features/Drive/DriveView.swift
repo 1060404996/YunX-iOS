@@ -170,11 +170,13 @@ struct DriveView: View {
         guard let status else { return "未登录" }
         if !status.loggedIn { return "游客态：小文件可直接下载" }
         var parts: [String] = []
-        if let nick = status.nickname, !nick.isEmpty { parts.append(nick) }
+        if let nick = status.nickname, !nick.isEmpty {
+            parts.append(nick)
+        } else {
+            parts.append("凭证已保存 · 服务端未确认")
+        }
         if status.total > 0 {
             parts.append("\(YXFormat.bytes(status.used)) / \(YXFormat.bytes(status.total))")
-        } else {
-            parts.append("登录态有效")
         }
         return parts.joined(separator: " · ")
     }

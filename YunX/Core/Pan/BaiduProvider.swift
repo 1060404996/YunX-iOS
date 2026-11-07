@@ -188,40 +188,45 @@ final class BaiduProvider: PanProvider {
         let loggedIn = isLoggedIn(ck)
 
         var link: String?
-        var firstError: Error?
-
-        // ① 免转存：分享页签名 + sharedownload。不占用户空间，也不需要 bdstoken
+        var reasons: [String] = []
         let fsId = file.fid
-        if !fsId.isEmpty, fsId.allSatisfy({ $0.isNumber }) {
+        let fsIdIsNumeric = !fsId.isEmpty && fsId.allSatisfy({ $0.isNumber })
+
+        // ① 桌面端主路径：转存到临时目录 → 按转存后路径 locatedownload → 立即清理
+        if loggedIn {
+            do {
+                link = try await transferThenLocate(session: session,
+                                                    file: file,
+                                                    cookie: ck,
+                                                    randsk: randsk)
+            } catch {
+                reasons.append("转存取链失败：\(error.localizedDescription)")
+            }
+        }
+
+        // ② 免转存兜底：分享页签名 + sharedownload（bdstoken 不可用时这条路仍可能通）
+        if link == nil, fsIdIsNumeric {
             do {
                 link = try await shareDownload(surl: session.shareId, fsIds: [fsId], cookie: ck)
             } catch {
-                firstError = error
+                reasons.append("免转存取链失败：\(error.localizedDescription)")
             }
         }
 
-        // ② 按分享内路径直取（部分公开分享允许）
-        if link == nil {
+        // ③ 分享内路径直取（公开分享可能允许）
+        if link == nil, !path.isEmpty {
             do {
                 link = try await locateDownload(path: path, cookie: auth)
             } catch {
-                if firstError == nil { firstError = error }
+                reasons.append("直取失败：\(error.localizedDescription)")
             }
         }
 
-        // ③ 转存兜底：会用到 bdstoken，且必须是登录态
-        if link == nil {
-            guard loggedIn else {
-                throw firstError ?? YXError.business("该分享需要登录百度网盘后才能下载")
-            }
-            link = try await transferThenLocate(session: session,
-                                                file: file,
-                                                cookie: ck,
-                                                randsk: randsk)
+        if link == nil, !loggedIn {
+            reasons.append("该分享需要登录百度网盘后才能下载")
         }
-
         guard let finalLink = link else {
-            throw firstError ?? YXError.business("未获取到下载链接")
+            throw YXError.business("百度取链失败\n" + reasons.joined(separator: "\n"))
         }
 
         var headers: [String: String] = [
@@ -485,7 +490,7 @@ final class BaiduProvider: PanProvider {
             BaiduProvider.storeBdstoken(token)
             return token
         }
-        throw YXError.business("获取 bdstoken 失败，请在网盘页重新登录百度（Cookie 可能不完整）")
+        throw YXError.business("获取 bdstoken 失败（gettemplatevariable 与网盘主页都没返回 token，通常说明 Cookie 缺少 BDUSS/STOKEN 或已过期）")
     }
 
     /// 从网盘主页 HTML 里提取 bdstoken
