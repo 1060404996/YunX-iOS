@@ -102,7 +102,7 @@ Actions 产出 `YunX.ipa`，**已经做过 ad-hoc 签名**（`codesign -s -`）�
 按顺序排查：
 
 1. **确认是自签安装**。直接把 ipa 拖进爱思助手「安装」而不重签名，几乎必然闪退。
-2. **确认设备 iOS ≥ 17.0**（`MinimumOSVersion` 是 17.0）。
+2. **确认设备 iOS ≥ 16.0**（`MinimumOSVersion` 是 16.0）。
 3. **抓崩溃日志**：`设置 → 隐私与安全性 → 分析与改进 → 分析数据`，找 `YunX-2026-xx-xx.ips` 开头的条目。
    日志里 `Exception Type` 与 `Termination Reason` 会直接指出原因：
    - `EXC_CRASH (SIGKILL)` + `Code Signature Invalid` → 签名问题，重新自签
