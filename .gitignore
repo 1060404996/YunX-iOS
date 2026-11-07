@@ -27,3 +27,4 @@ build.log
 # 本地验证产物
 _ipa/
 
+_diag/
