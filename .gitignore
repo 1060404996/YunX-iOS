@@ -23,3 +23,7 @@ Carthage/Build/
 # 鏃ュ織
 build.log
 *.log
+
+# 本地验证产物
+_ipa/
+
