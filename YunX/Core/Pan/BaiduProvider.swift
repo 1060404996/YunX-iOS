@@ -80,7 +80,8 @@ final class BaiduProvider: PanProvider {
 
     func listFiles(session: ShareSession, dirFid: String) async throws -> [ShareFileItem] {
         let randsk = randskOf(session)
-        let dir = dirFid.isEmpty ? "/" : dirFid
+        // 浏览页统一用 "0" 表示根目录；百度的 dir 参数根目录必须是 "/"
+        let dir = (dirFid.isEmpty || dirFid == "0") ? "/" : dirFid
         let ck = storedCookie()
 
         var all: [ShareFileItem] = []
