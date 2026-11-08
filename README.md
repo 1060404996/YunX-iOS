@@ -76,6 +76,21 @@ iOS 跑不了 JVM，所以这个仓库把它的**协议层逐条翻成 Swift**�
 Actions → Build iOS IPA → Artifacts → YunX-ipa
 ```
 
+### 备用构建：Codemagic
+
+仓库根目录的 `codemagic.yaml` 提供等价的 ad-hoc 签名构建（mac_mini_m2 + XcodeGen + xcodebuild），
+产物同样是 `YunX.ipa`。打 `v*` tag 自动触发，也可以用 REST API 手动触发：
+
+```bash
+curl -H "Content-Type: application/json" \
+     -H "x-auth-token: $CODEMAGIC_API_TOKEN" \
+     --data '{"appId":"<应用 ID>","workflowId":"ios-adhoc-ipa","branch":"main"}' \
+     -X POST https://api.codemagic.io/builds
+```
+
+`GET https://api.codemagic.io/apps` 可查应用 ID，`GET /builds/<id>` 查状态。
+API token 只放本机环境变量或 Secrets，**绝不写进仓库**；首次使用需先把本仓库添加为 Codemagic 应用。
+
 打 `v*` tag 会自动创建 Release 并把 ipa 挂上去。
 
 本地构建（需要 macOS + Xcode）：

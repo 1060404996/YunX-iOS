@@ -461,6 +461,67 @@ final class StreamTransfer: NSObject, URLSessionDataDelegate {
     }
 }
 
+// MARK: - 探测：只读响应头，绝不缓冲 body
+
+/// 早期 probe 用 `URLSession.data(for:)`：服务器忽略 Range 时会把整个 GB 级
+/// 文件读进内存，第二段不带 Range 的 GET 还会再全量下一遍。UI 因此长时间
+/// 停在「下载中 · 0 B · 速度 -」，甚至直接被系统 OOM kill。
+/// 这里在收到响应头的瞬间 cancel task，只把 headers 交回调用方。
+private final class HeaderProbe: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [Int: CheckedContinuation<HTTPURLResponse, Error>] = [:]
+
+    func headers(for request: URLRequest, on session: URLSession) async throws -> HTTPURLResponse {
+        let task = session.dataTask(with: request)
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HTTPURLResponse, Error>) in
+            lock.lock()
+            waiting[task.taskIdentifier] = cont
+            lock.unlock()
+            task.resume()
+        }
+    }
+
+    func urlSession(_ session: URLSession,
+                    dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        completionHandler(.cancel)          // body 一个字节都不收
+        lock.lock()
+        let cont = waiting.removeValue(forKey: dataTask.taskIdentifier)
+        lock.unlock()
+        guard let http = response as? HTTPURLResponse else {
+            cont?.resume(throwing: YXError.network("探测未收到 HTTP 响应"))
+            return
+        }
+        cont?.resume(returning: http)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let cont = waiting.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+        guard let cont else { return }
+        if let error, (error as? URLError)?.code != .cancelled {
+            cont.resume(throwing: error)
+        } else {
+            cont.resume(throwing: YXError.network("探测在返回响应头之前结束"))
+        }
+    }
+}
+
+/// URLSession 的 onProgress 给的是累计字节，ProgressReporter 需要增量。
+private final class ProgressDelta: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last: Int64 = 0
+
+    func delta(_ cumulative: Int64) -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        let d = cumulative - last
+        if cumulative > last { last = cumulative }
+        return d > 0 ? d : 0
+    }
+}
+
 // MARK: - 引擎
 
 final class DownloadEngine {
@@ -468,6 +529,7 @@ final class DownloadEngine {
     private let tuning: DownloadTuning
     private let limiter: SpeedLimiter
     private let writer = ChunkWriter()
+    private let probeFetcher: HeaderProbe
     private let probeSession: URLSession
 
     init(tuning: DownloadTuning = .default) {
@@ -479,7 +541,9 @@ final class DownloadEngine {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.httpShouldSetCookies = false
         cfg.httpCookieAcceptPolicy = .never
-        probeSession = URLSession(configuration: cfg)
+        let fetcher = HeaderProbe()
+        probeFetcher = fetcher
+        probeSession = URLSession(configuration: cfg, delegate: fetcher, delegateQueue: nil)
     }
 
     func setSpeedLimit(_ bytesPerSecond: Int64) async {
@@ -499,8 +563,7 @@ final class DownloadEngine {
         for (k, v) in spec.headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        if let raw = try? await probeSession.data(for: req),
-           let http = raw.1 as? HTTPURLResponse {
+        if let http = try? await probeFetcher.headers(for: req, on: probeSession) {
             let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
             if !ct.contains("text/html"),
                http.statusCode == 206,
@@ -523,10 +586,8 @@ final class DownloadEngine {
         for (k, v) in spec.headers {
             plain.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, resp) = try await probeSession.data(for: plain)
-        guard let http = resp as? HTTPURLResponse else {
-            throw YXError.network("无 HTTP 响应")
-        }
+        // 同样只读响应头：Content-Length 已经足够，不需要把整个文件拉回来
+        let http = try await probeFetcher.headers(for: plain, on: probeSession)
         let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         if ct.contains("text/html") {
             throw RangePolicyError.htmlResponse
@@ -537,7 +598,7 @@ final class DownloadEngine {
         guard (200...299).contains(http.statusCode) else {
             throw YXError.badStatus(http.statusCode, "探测失败（HTTP \(http.statusCode)）")
         }
-        let len = http.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) } ?? Int64(data.count)
+        let len = http.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) } ?? 0
         let total = spec.expectedSize > 0 ? spec.expectedSize : len
         return RangeProbe(totalBytes: total, supportsRange: false,
                           etag: http.value(forHTTPHeaderField: "ETag"))
@@ -696,6 +757,7 @@ final class DownloadEngine {
                 var offset = from
                 let transfer = StreamTransfer()
                 let writeError = WriteErrorBox()
+                let progressDelta = ProgressDelta()
                 let received = try await transfer.transfer(req) { data in
                     if writeError.take() == nil {
                         do {
@@ -705,7 +767,12 @@ final class DownloadEngine {
                         }
                     }
                     offset += Int64(data.count)
-                } onProgress: { _ in }
+                } onProgress: { cumulative in
+                    // 每收到一段就上报，而不是等整片（约 13MB）跑完才动一次。
+                    // 否则大文件在第一个分片完成前一直显示 0 B / 速度 -。
+                    let d = progressDelta.delta(cumulative)
+                    if d > 0 { reporter.bump(d) }
+                }
                 // 写盘失败（磁盘满 / 句柄已关闭 / seek 失败）绝不能算成功分片，
                 // 否则会产出「进度 100%」的空洞文件。
                 if let error = writeError.take() { throw error }
@@ -713,7 +780,7 @@ final class DownloadEngine {
                 await limiter.consume(received)
 
                 let snapshot = box.addDone(index: index, bytes: received)
-                reporter.bump(received)
+                reporter.flush()          // 补上被 0.2s 节流吃掉的最后一段
                 try? persist(snapshot, to: manifestURL)
 
                 if box.chunk(at: index).isFinished { return }
@@ -846,5 +913,14 @@ final class ProgressReporter: @unchecked Sendable {
         let snapshot = downloaded
         lock.unlock()
         if shouldEmit { onUpdate(snapshot, total) }
+    }
+
+    /// 分片结束时强制补发一次，避免末尾不足 0.2s 的进度被节流丢弃
+    func flush() {
+        lock.lock()
+        let snapshot = downloaded
+        lastEmit = Date()
+        lock.unlock()
+        onUpdate(snapshot, total)
     }
 }

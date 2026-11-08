@@ -1,0 +1,75 @@
+# YunX-iOS · Codemagic 构建配置
+#
+# 与 .github/workflows/build-ios.yml 等价：XcodeGen 生成工程 → 未签名构建
+# → ad-hoc 签名 → 打包 ipa。不依赖开发者证书 / 描述文件。
+#
+# 触发方式：
+#   1) 打 v* tag 自动构建；
+#   2) 用 Codemagic REST API 手动触发（API 触发会忽略 triggering 配置）：
+#      POST https://api.codemagic.io/builds
+#      {"appId":"<应用 ID>","workflowId":"ios-adhoc-ipa","branch":"main"}
+#   3) 在 Codemagic 应用页面点 Start new build。
+#
+# 注意：API token 绝不写进仓库，见工作区 .workbuddy/secrets/ 与 README 说明。
+
+workflows:
+  ios-adhoc-ipa:
+    name: YunX iOS ad-hoc IPA
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+      vars:
+        APP_SCHEME: YunX
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: 'v*'
+          include: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+      - name: Generate Xcode project
+        script: xcodegen generate --spec project.yml
+      - name: Build unsigned app (arm64)
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project YunX.xcodeproj \
+            -scheme "$APP_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="${VERSION_NUMBER:-0.0.$BUILD_NUMBER}" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            build | tee build.log
+      - name: Ad-hoc sign and package IPA
+        script: |
+          set -e
+          APP_PATH="build/Build/Products/Release-iphoneos/YunX.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App bundle not found at $APP_PATH"
+            exit 1
+          fi
+          # 零签名 Mach-O 会被 iOS 内核 SIGKILL，ad-hoc 签名这步不能省
+          codesign --force --timestamp=none --sign - "$APP_PATH"
+          # 签名校验必须硬失败，坏包不能进 artifacts
+          codesign --verify --verbose=2 "$APP_PATH"
+          mkdir -p out/Payload
+          cp -R "$APP_PATH" out/Payload/
+          chmod +x "out/Payload/YunX.app/YunX"
+          (cd out && zip -qry "../YunX.ipa" Payload)
+          ls -lh YunX.ipa
+    artifacts:
+      - YunX.ipa
+      - build.log

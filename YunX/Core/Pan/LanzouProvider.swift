@@ -208,7 +208,11 @@ final class LanzouProvider: PanProvider {
             guard !iframeHost.isEmpty, iframeHost == page.host else {
                 throw YXError.business("蓝奏下载页面地址异常，请检查分享链接")
             }
-            html = try await fetchHTML(page.iframeURL, referer: page.shareURL)
+            let iframeHTML = try await fetchHTML(page.iframeURL, referer: page.shareURL)
+            // 旧版把下载参数放在外层分享页，新版放在同源 iframe 里。
+            // 之前直接覆盖 html：外层有 sign 而 iframe 没有时就误报
+            // 「分享页缺少下载参数」。两个页面都保留，iframe 优先。
+            html = iframeHTML + "\n" + page.html
         }
 
         // 文件 id：列表项里带 f: 前缀，单文件分享回落到页面里的 fileId
@@ -223,12 +227,11 @@ final class LanzouProvider: PanProvider {
                                           origin: page.origin,
                                           fileId: fileId,
                                           withPwd: withPwd)
-        // 新版页面的签名变量叫 wp_sign，旧版叫 sign
-        let sign = Self.jsVar(html, "wp_sign")
-            ?? Self.jsVar(html, "sign")
-            ?? Self.inputValue(html, "sign")
-            ?? ""
-        guard !sign.isEmpty else {
+        // 新版页面的签名变量叫 wp_sign，旧版叫 sign，也有以属性 / JSON 字段下发的
+        guard let sign = Self.downloadSign(html) else {
+            if Self.arg1(in: html) != nil || html.contains("acw_sc__v2") {
+                throw YXError.business("蓝奏返回了人机验证页，请稍后重新解析")
+            }
             throw YXError.business("蓝奏分享页缺少下载参数，请重新解析")
         }
 
@@ -449,10 +452,7 @@ final class LanzouProvider: PanProvider {
             }
         }
 
-        let sign = Self.jsVar(html, "wp_sign")
-            ?? Self.jsVar(html, "sign")
-            ?? Self.inputValue(html, "sign")
-            ?? ""
+        let sign = Self.downloadSign(html) ?? ""
         let sizeText = YXHTML.first("(?:文件大小|大小)\\s*[:：]\\s*([0-9.]+\\s*[KMGT]?)", in: html) ?? ""
 
         return SharePage(shareURL: shareURL,
@@ -942,6 +942,20 @@ final class LanzouProvider: PanProvider {
             return raw
         }
         return ""
+    }
+
+    /// 下载签名在各版本蓝奏页面里的落点不统一：JS 变量 / hidden input /
+    /// HTML5 data 属性 / JSON 字段 / iframe query 都出现过，逐个兜底。
+    private static func downloadSign(_ html: String) -> String? {
+        let candidates: [String?] = [
+            jsVar(html, "wp_sign"),
+            jsVar(html, "sign"),
+            inputValue(html, "sign"),
+            YXHTML.first("[\"']sign[\"']\\s*:\\s*[\"']([^\"']{6,128})[\"']", in: html),
+            YXHTML.first("data-sign=[\"']([^\"']{6,128})[\"']", in: html),
+            YXHTML.first("[?&]sign=([A-Za-z0-9_-]{6,128})", in: html)
+        ]
+        return candidates.compactMap { $0 }.first { !$0.isEmpty }
     }
 
     /// 读取带引号的 JS 变量（如 `var wp_sign = '...'`）

@@ -192,8 +192,19 @@ final class BaiduProvider: PanProvider {
         let fsId = file.fid
         let fsIdIsNumeric = !fsId.isEmpty && fsId.allSatisfy({ $0.isNumber })
 
-        // ① 桌面端主路径：转存到临时目录 → 按转存后路径 locatedownload → 立即清理
-        if loggedIn {
+        // ① 免转存主路径：分享页签名 + sharedownload。
+        //    代码注释与桌面版协议都主张先走这条；此前却先做有副作用的「转存到
+        //    用户网盘再删」，登录态一过期就先撞 bdstoken，错误信息全是噪音。
+        if fsIdIsNumeric {
+            do {
+                link = try await shareDownload(surl: session.shareId, fsIds: [fsId], cookie: auth)
+            } catch {
+                reasons.append("免转存取链失败：\(error.localizedDescription)")
+            }
+        }
+
+        // ② 登录态兜底：转存到临时目录 → 按转存后路径 locatedownload → 立即清理
+        if link == nil, loggedIn {
             do {
                 link = try await transferThenLocate(session: session,
                                                     file: file,
@@ -204,26 +215,19 @@ final class BaiduProvider: PanProvider {
             }
         }
 
-        // ② 免转存兜底：分享页签名 + sharedownload（bdstoken 不可用时这条路仍可能通）
-        if link == nil, fsIdIsNumeric {
-            do {
-                link = try await shareDownload(surl: session.shareId, fsIds: [fsId], cookie: ck)
-            } catch {
-                reasons.append("免转存取链失败：\(error.localizedDescription)")
-            }
-        }
-
-        // ③ 分享内路径直取（公开分享可能允许）
+        // ③ 分享内路径直取：多数分享会返 31066（分享内 path 不是自己网盘的 path），
+        //    只作为公共分享的最后兜底，且不再让它的报错盖过主路径原因。
         if link == nil, !path.isEmpty {
-            do {
-                link = try await locateDownload(path: path, cookie: auth)
-            } catch {
-                reasons.append("直取失败：\(error.localizedDescription)")
+            if let direct = try? await locateDownload(path: path, cookie: auth) {
+                link = direct
             }
         }
 
         if link == nil, !loggedIn {
             reasons.append("该分享需要登录百度网盘后才能下载")
+        }
+        if link == nil, loggedIn {
+            reasons.append("若持续失败：请到「网盘」页重新登录百度网盘，确认 Cookie 含 BDUSS / STOKEN，再重新解析分享链接")
         }
         guard let finalLink = link else {
             throw YXError.business("百度取链失败\n" + reasons.joined(separator: "\n"))
@@ -371,15 +375,32 @@ final class BaiduProvider: PanProvider {
     }
 
     private func sharePageSign(surl: String, cookie: String) async -> ShareSign? {
-        let pageURL = panHost + "/s/" + surl
-        guard let html = try? await PanTool.text(url: pageURL, headers: [
+        // 带提取码的分享页必须带 BDCLND(=randsk) 才能看到 yunData；
+        // 少了它百度只返回验证页，页面里根本没有 sign/timestamp。
+        // 之前这里只传 storedCookie()，是「分享页签名解析失败」的常见原因。
+        let candidates = [
+            panHost + "/s/" + surl,
+            panHost + "/share/init?surl=" + YXURLUtil.encode(surl)
+        ]
+        let headers: [String: String] = [
             "Cookie": cookie,
             "User-Agent": webUA,
-            "Referer": panHost + "/"
-        ], allowStatus: [200, 302]) else { return nil }
+            "Referer": panHost + "/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9"
+        ]
+        for pageURL in candidates {
+            guard let html = try? await PanTool.text(url: pageURL, headers: headers,
+                                                     allowStatus: [200, 302]) else { continue }
+            if let parsed = Self.parseShareSign(html) { return parsed }
+        }
+        return nil
+    }
 
-        // 字段在页面内嵌的 yunData 里，逐个正则比整段 JSON 解析更抗结构变化
-        guard let sign = YXHTML.first("\"sign\"\\s*:\\s*\"([A-Za-z0-9]{16,64})\"", in: html)
+    /// 字段在页面内嵌的 yunData 里，逐个正则比整段 JSON 解析更抗结构变化
+    private static func parseShareSign(_ html: String) -> ShareSign? {
+        guard let sign = YXHTML.first("\"sign\"\\s*:\\s*\"([^\"]{8,128})\"", in: html)
+                ?? YXHTML.first("sign\\s*=\\s*[\"']([A-Za-z0-9_-]{8,128})[\"']", in: html)
                 ?? YXHTML.first("sign=([A-Za-z0-9]{16,64})", in: html),
               let timestamp = YXHTML.first("\"timestamp\"\\s*:\\s*\"?(\\d{10,13})", in: html),
               let shareId = YXHTML.first("\"shareid\"\\s*:\\s*\"?(\\d+)\"?", in: html)
@@ -395,7 +416,7 @@ final class BaiduProvider: PanProvider {
     private func shareDownload(surl: String, fsIds: [String], cookie: String) async throws -> String {
         guard !fsIds.isEmpty else { throw YXError.business("缺少文件 ID") }
         guard let p = await sharePageSign(surl: surl, cookie: cookie) else {
-            throw YXError.business("分享页签名解析失败")
+            throw YXError.business("分享页未返回签名（可能需要提取码、Cookie 已失效，或被百度验证页拦截）")
         }
 
         let url = panHost + "/api/sharedownload?sign=" + YXURLUtil.encode(p.sign)
