@@ -23,8 +23,11 @@ struct LoginView: View {
         NavigationStack {
             ZStack(alignment: .top) {
                 CookieWebView(urlString: loginURL,
-                              cookieDomains: [platform.cookieDomain,
-                                              platform.cookieDomain.replacingOccurrences(of: ".", with: "")],
+                              // 只去前导点。此前 replacingOccurrences(of: ".", with: "")
+                              // 会把 .quark.cn 变成 quarkcn，域匹配永久失效。
+                              cookieDomains: [platform.cookieDomain.hasPrefix(".")
+                                              ? String(platform.cookieDomain.dropFirst())
+                                              : platform.cookieDomain],
                               requiredKeys: requiredKeys,
                               onProgress: { progress = $0 },
                               onFound: { cookie in
@@ -59,6 +62,13 @@ struct LoginView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(.ultraThinMaterial)
+            }
+            .onAppear {
+                // 无明确必需键的平台 WKWebView 不会自动回调 onFound，
+                // 直接引导手动粘贴，别让用户一直等「请在页面内完成登录」。
+                if requiredKeys.isEmpty {
+                    hint = "该平台无法自动检测登录态，请点右上角「手动」粘贴 Cookie / Token"
+                }
             }
             .sheet(isPresented: $showManual) {
                 manualSheet
@@ -194,11 +204,16 @@ struct CookieWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        // SwiftUI 重建 CookieWebView 时刷新闭包，否则 Coordinator 永远
+        // 持有首次创建时的 onFound / onProgress。
+        context.coordinator.parent = self
+    }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
-        private let parent: CookieWebView
+        var parent: CookieWebView
         private var timer: Timer?
+        private var hasFired = false
 
         init(_ parent: CookieWebView) {
             self.parent = parent
@@ -217,28 +232,33 @@ struct CookieWebView: UIViewRepresentable {
 
         private func checkCookies() {
             // 没有明确必需键的平台不做自动检测，只走手动粘贴
-            guard !parent.requiredKeys.isEmpty else { return }
+            guard !parent.requiredKeys.isEmpty, !hasFired else { return }
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
                 guard let self else { return }
-                let names = Set(cookies.map { $0.name })
-                guard self.parent.requiredKeys.allSatisfy({ names.contains($0) }) else { return }
-
+                let domains = self.parent.cookieDomains.map { $0.lowercased() }
                 let relevant = cookies.filter { cookie in
                     let d = cookie.domain.lowercased()
-                    return self.parent.cookieDomains.contains { domain in
-                        let clean = domain.lowercased()
-                        return d == clean || d.hasSuffix(clean) || clean.hasSuffix(d)
-                    }
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    return domains.contains { d == $0 || d.hasSuffix("." + $0) }
                 }
-                let chosen = relevant.isEmpty ? cookies : relevant
-                let header = chosen
+                // 域匹配为空时不能回退成「拼接全部站点 Cookie」：那会把
+                // 无关域的凭证一起写进网盘请求头。必需键也只在目标域内判定。
+                guard !relevant.isEmpty else { return }
+                let names = Set(relevant.map { $0.name })
+                guard self.parent.requiredKeys.allSatisfy({ names.contains($0) }) else { return }
+                let header = relevant
                     .map { "\($0.name)=\($0.value)" }
                     .joined(separator: "; ")
                 guard !header.isEmpty else { return }
 
-                self.timer?.invalidate()
-                self.timer = nil
+                // Timer 装在主线程 RunLoop，只能在主线程 invalidate；
+                // getAllCookies 回调不在主线程，且 didFinish 与 1.2s 轮询
+                // 会并发触发，hasFired 保证 onFound 只走一次。
                 DispatchQueue.main.async {
+                    guard !self.hasFired else { return }
+                    self.hasFired = true
+                    self.timer?.invalidate()
+                    self.timer = nil
                     self.parent.onFound(header)
                 }
             }

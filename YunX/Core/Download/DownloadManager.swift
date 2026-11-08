@@ -80,8 +80,16 @@ final class CancelFlag: @unchecked Sendable {
 // MARK: - 路径
 
 enum YXPaths {
+    /// 容器目录在签名/entitlement 异常时可能取不到。YXPaths 在 App 启动
+    /// （DownloadManager.shared → load()）就会被调用，此处绝不能用 [0] 强取，
+    /// 否则会在首屏渲染前 Index out of range，表现就是「装上但点开闪退」。
+    private static var fallbackDirectory: URL {
+        FileManager.default.temporaryDirectory
+    }
+
     static var documents: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fallbackDirectory
     }
 
     static var downloads: URL {
@@ -93,7 +101,7 @@ enum YXPaths {
     /// 分片临时目录（不放进 Documents，避免被 iCloud 备份与用户误删）
     static var parts: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
+                                            in: .userDomainMask).first ?? fallbackDirectory
         let url = base.appendingPathComponent("YunX/parts", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         var values = URLResourceValues()
@@ -105,7 +113,7 @@ enum YXPaths {
 
     static var tasksFile: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
+                                            in: .userDomainMask).first ?? fallbackDirectory
         let dir = base.appendingPathComponent("YunX", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("tasks.json")

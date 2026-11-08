@@ -24,7 +24,16 @@ Carthage/Build/
 build.log
 *.log
 
-# ������֤����
-_ipa/
+# XcodeGen 生成物（xcodegen generate 时产出，不入库）
+YunX/App/Info.plist
 
+# 签名材料：证书与描述文件只允许放 Secrets，绝不入库
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+
+# 本地诊断与 ipa 校验目录
+_ipa/
 _diag/

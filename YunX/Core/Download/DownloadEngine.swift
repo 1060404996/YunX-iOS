@@ -378,18 +378,20 @@ final class StreamTransfer: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let taskId = task.taskIdentifier
+        // didReceive response 里的策略性失败（Range 被忽略 / 防盗链 HTML /
+        // 状态码异常 / Content-Range 不匹配）都以 completionHandler(.cancel) 收尾，
+        // URLSession 此时只会回调 URLError.cancelled。必须先把真实错误取出来，
+        // 否则一切失败都会伪装成「用户取消」，200 回退与重试策略全部失效。
+        if let stored = takeFailure(taskId: taskId) {
+            finish(taskId: taskId, result: .failure(stored))
+            return
+        }
         if let error {
             if (error as? URLError)?.code == .cancelled {
                 finish(taskId: taskId, result: .failure(YXError.cancelled))
-            } else if let stored = takeFailure(taskId: taskId) {
-                finish(taskId: taskId, result: .failure(stored))
             } else {
                 finish(taskId: taskId, result: .failure(YXError.network(error.localizedDescription)))
             }
-            return
-        }
-        if let stored = takeFailure(taskId: taskId) {
-            finish(taskId: taskId, result: .failure(stored))
             return
         }
         lock.lock()
@@ -631,6 +633,24 @@ final class DownloadEngine {
                     }
                 }
             }
+        } catch let policy as RangePolicyError {
+            writer.close(writerKey)
+            if case .rangeIgnored = policy {
+                // 服务器忽略 Range：分片结果全部作废，整任务回退单流。
+                // 文件末尾的注释写了这条规则，但此前 runChunk 只是把错误
+                // 一路 rethrow，任务直接失败，从未真正回退。
+                // TaskGroup 抛错离开作用域时会等待所有子任务结束，
+                // 因此此刻不会再有分片并发写盘。
+                try? FileManager.default.removeItem(at: manifestURL)
+                return try await singleStream(spec: spec,
+                                              destination: destination,
+                                              manifestURL: manifestURL,
+                                              total: probe.totalBytes,
+                                              progress: progress,
+                                              isCancelled: isCancelled)
+            }
+            try? persist(box.snapshot(), to: manifestURL)
+            throw policy
         } catch {
             writer.close(writerKey)
             try? persist(box.snapshot(), to: manifestURL)
@@ -675,10 +695,20 @@ final class DownloadEngine {
 
                 var offset = from
                 let transfer = StreamTransfer()
+                let writeError = WriteErrorBox()
                 let received = try await transfer.transfer(req) { data in
-                    try? self.writer.write(writerKey, offset: offset, data: data)
+                    if writeError.take() == nil {
+                        do {
+                            try self.writer.write(writerKey, offset: offset, data: data)
+                        } catch {
+                            writeError.record(error)
+                        }
+                    }
                     offset += Int64(data.count)
                 } onProgress: { _ in }
+                // 写盘失败（磁盘满 / 句柄已关闭 / seek 失败）绝不能算成功分片，
+                // 否则会产出「进度 100%」的空洞文件。
+                if let error = writeError.take() { throw error }
 
                 await limiter.consume(received)
 
@@ -731,11 +761,22 @@ final class DownloadEngine {
         try writer.open(writerKey, at: destination, size: 0)
         let transfer = StreamTransfer()
 
+        let writeError = WriteErrorBox()
         let written = try await transfer.transfer(req) { data in
-            try? self.writer.write(writerKey, offset: offset, data: data)
+            if writeError.take() == nil {
+                do {
+                    try self.writer.write(writerKey, offset: offset, data: data)
+                } catch {
+                    writeError.record(error)
+                }
+            }
             offset += Int64(data.count)
             reporter.bump(Int64(data.count))
         } onProgress: { _ in }
+        if let error = writeError.take() {
+            writer.close(writerKey)
+            throw error
+        }
 
         writer.close(writerKey)
         _ = await limiter.consume(written)
@@ -761,6 +802,23 @@ final class DownloadEngine {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+    }
+}
+
+/// delegate 的 sink 闭包不能 throw，写盘失败先记在这里，
+/// transfer 结束后由调用方统一抛出，避免「写失败但仍标记分片完成」。
+private final class WriteErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Error?
+
+    func record(_ error: Error) {
+        lock.lock(); defer { lock.unlock() }
+        if value == nil { value = error }
+    }
+
+    func take() -> Error? {
+        lock.lock(); defer { lock.unlock() }
+        return value
     }
 }
 

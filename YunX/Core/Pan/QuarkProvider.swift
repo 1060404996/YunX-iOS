@@ -52,6 +52,9 @@ class QuarkLikeProvider: PanProvider {
             link = try await client.guestDownloadLink(session: session, file: file)
         }
 
+        // 把「取链那一刻」的 Cookie 钉在直链上（游客态用 guestCookie，
+        // 登录态用本次取链入参 cookie），供下载头复用。
+        link.linkCookie = loggedIn ? cookie : link.guestCookie
         let headers = Self.downloadHeaders(platform: platform, link: link)
         return ResolvedDownload(url: link.url,
                                 filename: file.name,
@@ -101,6 +104,10 @@ class QuarkLikeProvider: PanProvider {
             headers["Cookie"] = link.guestCookie
             if let guestUA = cfg.guestUA { headers["User-Agent"] = guestUA }
             if let secCh = cfg.guestSecChUa { headers["Sec-Ch-Ua"] = secCh }
+        } else if !link.linkCookie.isEmpty {
+            // 直链签名绑死取链时的那份 Cookie；重新读 Keychain 可能已换成
+            // 另一个账号或刷新后的 __puus，服务端会直接返 412。
+            headers["Cookie"] = link.linkCookie
         } else {
             let cookie = PanTool.cookie(platform)
             if !cookie.isEmpty { headers["Cookie"] = cookie }

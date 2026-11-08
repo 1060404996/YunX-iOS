@@ -167,11 +167,13 @@ struct DownloadView: View {
             if item.state == .running {
                 Button("暂停", systemImage: "pause") { downloads.pause(item.id) }
             }
-            if item.state == .paused || item.state == .failed {
+            if item.state == .paused {
                 Button("继续", systemImage: "play") { downloads.start(item.id) }
             }
             if item.state == .failed {
-                Button("重新下载", systemImage: "arrow.clockwise") { downloads.retry(item.id) }
+                // 与下方 actionRow 的「重试」统一走 retry：失败态不再提供
+                // 语义冲突的「继续」（它会复用残余 manifest，行为完全不同）。
+                Button("重试", systemImage: "arrow.clockwise") { downloads.retry(item.id) }
             }
             Button("删除任务", systemImage: "trash", role: .destructive) {
                 downloads.remove(item.id, deleteFile: item.state != .completed)

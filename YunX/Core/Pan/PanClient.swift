@@ -94,6 +94,9 @@ struct PanDownloadLink {
     let size: Int64
     /// 游客态直链携带的 __pugs（登录态为空）
     var guestCookie: String = ""
+    /// 取链那一刻实际使用的 Cookie。直链签名与这份 Cookie 绑定，
+    /// 下载阶段必须复用，不能重新从 Keychain 读（会话刷新/多账号会串号 → 412）。
+    var linkCookie: String = ""
     /// 转存后需清理的临时目录 fid
     var cleanupDirFid: String? = nil
 }

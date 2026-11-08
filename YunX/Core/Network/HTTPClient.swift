@@ -146,8 +146,13 @@ final class CookieStore {
     func cookieHeader(forHost host: String) -> String? {
         let h = host.lowercased()
         for platform in SharePlatform.allCases {
-            let domain = platform.cookieDomain.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            if h.hasSuffix(domain), let c = cookie(for: platform), !c.isEmpty {
+            let domain = platform.cookieDomain
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                .lowercased()
+            // 必须按域名边界匹配：裸 hasSuffix 会让 evilquark.cn 也命中 quark.cn，
+            // 把网盘登录态 Cookie 泄漏给伪装域名。
+            guard h == domain || h.hasSuffix("." + domain) else { continue }
+            if let c = cookie(for: platform), !c.isEmpty {
                 return c
             }
         }

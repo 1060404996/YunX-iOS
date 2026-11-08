@@ -19,15 +19,20 @@ enum ResolveService {
     }
 
     static func createSession(platform: SharePlatform, shareId: String, pwd: String?) async throws -> ShareSession {
-        try await provider(for: platform).createSession(shareId: shareId, pwd: pwd)
+        // __puus 约 3 小时过期；此前 refreshSessionIfNeeded 只有定义、没有调用点，
+        // 登录态过 3 小时后只能一直撞 412。三个入口统一做 90 分钟节流刷新。
+        await refreshSessionIfNeeded(platform: platform)
+        return try await provider(for: platform).createSession(shareId: shareId, pwd: pwd)
     }
 
     static func listFiles(session: ShareSession, dirFid: String = "0") async throws -> [ShareFileItem] {
-        try await provider(for: session.platform).listFiles(session: session, dirFid: dirFid)
+        await refreshSessionIfNeeded(platform: session.platform)
+        return try await provider(for: session.platform).listFiles(session: session, dirFid: dirFid)
     }
 
     static func resolveDownload(session: ShareSession, file: ShareFileItem) async throws -> ResolvedDownload {
-        try await provider(for: session.platform).resolveDownload(session: session, file: file)
+        await refreshSessionIfNeeded(platform: session.platform)
+        return try await provider(for: session.platform).resolveDownload(session: session, file: file)
     }
 
     // MARK: 账号侧

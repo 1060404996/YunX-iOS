@@ -130,31 +130,32 @@ struct ShareBrowserView: View {
     }
 
     private func row(_ file: ShareFileItem, isLast: Bool) -> some View {
-        Button {
+        // 此前整行是 Button，label 内又嵌了「下载」Button，SwiftUI 的外层
+        // hit-test 会吞掉内层点击，导致文件行的下载按钮点不动。
+        // 改成普通容器 + onTapGesture 只负责进目录，下载 pill 是唯一的 Button。
+        YXRow(symbol: iconName(for: file),
+              tint: file.isDir ? YXColor.brand : colorFor(file.name),
+              title: file.name,
+              subtitle: file.isDir ? "文件夹" : YXFormat.bytes(file.size),
+              isLast: isLast) {
             if file.isDir {
-                dirStack.append(file.fid)
-                load()
-            }
-        } label: {
-            YXRow(symbol: iconName(for: file),
-                  tint: file.isDir ? YXColor.brand : colorFor(file.name),
-                  title: file.name,
-                  subtitle: file.isDir ? "文件夹" : YXFormat.bytes(file.size),
-                  isLast: isLast) {
-                if file.isDir {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(YXColor.tertiaryLabel)
-                } else if busyFid == file.fid {
-                    ProgressView().scaleEffect(0.8)
-                } else {
-                    YXPillButton(title: "下载", symbol: "arrow.down") {
-                        enqueue(file)
-                    }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(YXColor.tertiaryLabel)
+            } else if busyFid == file.fid {
+                ProgressView().scaleEffect(0.8)
+            } else {
+                YXPillButton(title: "下载", symbol: "arrow.down") {
+                    enqueue(file)
                 }
             }
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard file.isDir else { return }
+            dirStack.append(file.fid)
+            load()
+        }
     }
 
     private func iconName(for file: ShareFileItem) -> String {

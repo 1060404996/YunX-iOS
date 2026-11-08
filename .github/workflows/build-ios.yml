@@ -89,7 +89,8 @@ jobs:
           codesign --force --timestamp=none --sign - "$APP_PATH"
           codesign -dv --verbose=2 "$APP_PATH" 2>&1 || true
           echo "---- verify ----"
-          codesign --verify --verbose=2 "$APP_PATH" 2>&1 || true
+          # 签名校验失败必须让 job 失败：以前加 || true，坏包会一路进 Release
+          codesign --verify --verbose=2 "$APP_PATH"
 
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/

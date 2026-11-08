@@ -166,7 +166,14 @@ enum YXCrypto {
         guard offset < end else { return nil }
         let payload = data.subdata(in: (data.startIndex + offset)..<(data.startIndex + end))
 
-        return decompressDeflate(payload)
+        // gzip 头之后是 RFC1951 裸 deflate，而 COMPRESSION_ZLIB 要求 RFC1950
+        // zlib 封装（0x78 0x9C 头）。直接把裸流交给 decoder 会恒返回 0 字节，
+        // 139 网盘的加密 gzip 响应因此全部解密失败。
+        // 补上 CMF/FLG 即可；deflate 流以 BFINAL=1 结束时 decoder 就返回已产出
+        // 字节，不需要尾部 adler32（gzip 尾是 CRC32/ISIZE，不能拿来充数）。
+        var wrapped = Data([0x78, 0x9C])
+        wrapped.append(payload)
+        return decompressDeflate(wrapped)
     }
 
     private static func decompressDeflate(_ input: Data) -> Data? {

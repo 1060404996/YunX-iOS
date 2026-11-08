@@ -168,7 +168,11 @@ enum ShareLinkParser {
                                platform: .lanzou)
         }
         // GitHub（最宽松，放最后）
-        if let m = firstMatch("github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", in: url) {
+        // firstMatch 只返回第 1 个捕获组。早期版本写成两个组，shareId 只剩 owner，
+        // 而 GitHubProvider.parseTarget 至少要求 owner/repo，导致所有 GitHub 链接
+        // 都报「无法识别仓库」。这里把 owner/repo 及后续 tree/blob 路径收进单个组，
+        // 交给 parseTarget 自行拆分。
+        if let m = firstMatch("github\\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^\\s?#]*)?)", in: url) {
             return ParsedShare(shareId: m, pwd: nil, platform: .github)
         }
         return nil

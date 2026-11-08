@@ -137,6 +137,8 @@ final class XunleiProvider: PanProvider {
     /// captcha_token 与过期时刻（网页 token 300s，过期后绝不复用，否则每次解析先撞一次 captcha_invalid）
     private var captchaToken: String = ""
     private var captchaExpiry: Date = .distantPast
+    /// captcha init 的签名里含 action，缓存必须记住它是为哪个接口签的
+    private var captchaAction: String = ""
 
     // MARK: 会话
 
@@ -364,7 +366,10 @@ final class XunleiProvider: PanProvider {
     // MARK: - captcha（游客态也要一条可用的 X-Captcha-Token）
 
     private func captchaTokenFor(action: String, forceRefresh: Bool) async -> String {
-        if !forceRefresh, !captchaToken.isEmpty, captchaExpiry > Date() {
+        // captcha init 的签名含 action：列目录签的 token 拿去取链会被判
+        // captcha_invalid，缓存命中时必须同时校验 action。
+        if !forceRefresh, !captchaToken.isEmpty,
+           captchaExpiry > Date(), captchaAction == action {
             return captchaToken
         }
 
@@ -381,12 +386,14 @@ final class XunleiProvider: PanProvider {
         }
         captchaToken = result.token
         captchaExpiry = Date().addingTimeInterval(result.ttl)
+        captchaAction = action
         return result.token
     }
 
     private func invalidateCaptcha() {
         captchaToken = ""
         captchaExpiry = .distantPast
+        captchaAction = ""
     }
 
     /// App 通道 captcha init（XunleiApi.initPanCaptcha）：meta 带 10 盐签名；游客 user_id 传空串，
